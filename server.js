@@ -1,7 +1,7 @@
 const express = require('express');
 const axios = require('axios');
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
 // Helper to safely encode data to pass via URLs safely
 const safeBtoa = (str) => Buffer.from(str, 'utf-8').toString('base64url');
@@ -28,7 +28,7 @@ app.get('/get-playlist', (req, res) => {
     const encodedReferer = referer ? safeBtoa(referer) : '';
 
     // Direct the player to our manifest processor endpoint
-    const proxyUrl = `http://localhost:${PORT}/live.m3u8?s=${encodedUrl}&r=${encodedReferer}`;
+    const proxyUrl = `https://www.rutsports.com/live.m3u8?s=${encodedUrl}&r=${encodedReferer}`;
     res.json({ proxyUrl });
 });
 
@@ -79,10 +79,10 @@ app.get('/live.m3u8', async (req, res) => {
             const encodedSegmentUrl = safeBtoa(absoluteUrl);
             if (absoluteUrl.includes('.m3u8')) {
                 // If it links to a sub-playlist (variant stream), route back here
-                return `http://localhost:${PORT}/live.m3u8?s=${encodedSegmentUrl}&r=${r || ''}`;
+                return `https://www.rutsports.com/live.m3u8?s=${encodedSegmentUrl}&r=${r || ''}`;
             } else {
                 // If it is a video segment (.ts, .m4s), route to the segment proxy
-                return `http://localhost:${PORT}/segment?s=${encodedSegmentUrl}&r=${r || ''}`;
+                return `https://www.rutsports.com/segment?s=${encodedSegmentUrl}&r=${r || ''}`;
             }
         });
 
