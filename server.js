@@ -50,7 +50,7 @@ app.get('/proxy/segment', async (req, res) => {
   const customOrigin = req.query.origin;
     try {
     const response = await axios.get(targetUrl, {
-      responseType: 'arraybuffer',
+       responseType: url.includes('.m3u8') ? 'text' : 'stream',
       headers: {
         'Referer': customReferer,
         'Origin': customOrigin,
