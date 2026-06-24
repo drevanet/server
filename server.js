@@ -1,16 +1,14 @@
-const express = require('axios').default ? require('express') : require('express');
+const express = require('express');
 const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Enable wide CORS policies so React and Android clients can access the proxy
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
   next();
 });
 
-// Helper function to resolve relative URLs against a base URL
 function resolveUrl(baseUrl, relativeUrl) {
   if (relativeUrl.startsWith('http://') || relativeUrl.startsWith('https://')) {
     return relativeUrl;
@@ -19,7 +17,6 @@ function resolveUrl(baseUrl, relativeUrl) {
   return urlObj.href;
 }
 
-// Proxy endpoint
 app.get('/proxy', async (req, res) => {
   const { url, referer } = req.query;
 
@@ -28,12 +25,11 @@ app.get('/proxy', async (req, res) => {
   }
 
   try {
-    // Configuration matching standard "forbidden video" requirements
     const config = {
       method: 'get',
       url: url,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
         'Referer': referer || '',
         'Origin': referer ? new URL(referer).origin : ''
       },
@@ -42,14 +38,12 @@ app.get('/proxy', async (req, res) => {
 
     const response = await axios(config);
 
-    // Handle Manifest File (.m3u8) Parsing and URL Rewriting
     if (url.includes('.m3u8')) {
       const lines = response.data.split('\n');
       const rewrittenLines = lines.map(line => {
         line = line.trim();
         if (!line) return '';
-
-        // Skip comments, but parse encryption keys
+        
         if (line.startsWith('#')) {
           return line.replace(/URI=["']([^"']+)["']/g, (match, p1) => {
             const absoluteUri = resolveUrl(url, p1);
@@ -57,20 +51,17 @@ app.get('/proxy', async (req, res) => {
             return `URI="${proxyUrl}"`;
           });
         }
-
-        // Native Android players break on rewritten .m3u8 URLs for media chunks. 
-        // We pass the absolute media URL so the player engine handles the segments natively.
-        return resolveUrl(url, line);
+        
+        const absoluteMediaUrl = resolveUrl(url, line);
+        return `${req.protocol}://${req.get('host')}/proxy?url=${encodeURIComponent(absoluteMediaUrl)}&referer=${encodeURIComponent(referer || '')}`;
       });
 
       res.setHeader('Content-Type', 'application/x-mpegURL');
       return res.send(rewrittenLines.join('\n'));
     }
 
-    // Handle standard video/binary chunk streaming (.ts files)
     res.setHeader('Content-Type', response.headers['content-type'] || 'video/MP2T');
     response.data.pipe(res);
-
   } catch (error) {
     console.error(`Proxy Error fetching URL: ${url}`, error.message);
     res.status(error.response?.status || 500).send(error.message);
