@@ -50,7 +50,7 @@ app.get('/proxy/segment', async (req, res) => {
   const customOrigin = req.query.origin;
     try {
     const response = await axios.get(targetUrl, {
-      responseType: 'stream',
+      responseType: 'arraybuffer',
       headers: {
         'Referer': customReferer,
         'Origin': customOrigin,
