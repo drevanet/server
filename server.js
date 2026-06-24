@@ -7,65 +7,60 @@ app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
   next();
-});
-
-function resolveUrl(baseUrl, relativeUrl) {
-  if (relativeUrl.startsWith('http://') || relativeUrl.startsWith('https://')) {
-    return relativeUrl;
-  }
-  const urlObj = new URL(relativeUrl, baseUrl);
-  return urlObj.href;
-}
-
-app.get('/proxy', async (req, res) => {
-  const { url, referer } = req.query;
-
-  if (!url) {
-    return res.status(400).send('Missing url parameter');
-  }
-
-  try {
-    const config = {
-      method: 'get',
-      url: url,
+  });
+  app.get('/proxy/stream', async (req, res) => {
+  const targetUrl = req.query.url; // The raw m3u8 URL
+  const customReferer = req.query.referer || 'https://target-website.com';
+  const customOrigin = req.query.origin || 'https://target-website.com';
+    try {
+    const response = await axios.get(targetUrl, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-        'Referer': referer || '',
-        'Origin': referer ? new URL(referer).origin : ''
-      },
-      responseType: url.includes('.m3u8') ? 'text' : 'stream'
-    };
-
-    const response = await axios(config);
-
-    if (url.includes('.m3u8')) {
-      const lines = response.data.split('\n');
-      const rewrittenLines = lines.map(line => {
-        line = line.trim();
-        if (!line) return '';
-        
-        if (line.startsWith('#')) {
-          return line.replace(/URI=["']([^"']+)["']/g, (match, p1) => {
-            const absoluteUri = resolveUrl(url, p1);
-            const proxyUrl = `${req.protocol}://${req.get('host')}/proxy?url=${encodeURIComponent(absoluteUri)}&referer=${encodeURIComponent(referer || '')}`;
-            return `URI="${proxyUrl}"`;
-          });
-        }
-        
-        const absoluteMediaUrl = resolveUrl(url, line);
-        return `${req.protocol}://${req.get('host')}/proxy?url=${encodeURIComponent(absoluteMediaUrl)}&referer=${encodeURIComponent(referer || '')}`;
-      });
-
-      res.setHeader('Content-Type', 'application/x-mpegURL');
-      return res.send(rewrittenLines.join('\n'));
-    }
-
-    res.setHeader('Content-Type', response.headers['content-type'] || 'video/MP2T');
-    response.data.pipe(res);
+        'Referer': customReferer,
+        'Origin': customOrigin,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+      }
+    });
+     // Determine the base URL to resolve relative .ts segment paths
+    const urlObj = new URL(targetUrl);
+    const baseUrl = `${urlObj.protocol}//${urlObj.host}${urlObj.pathname.substring(0, urlObj.pathname.lastIndexOf('/') + 1)}`;
+     // Parse the M3U8 string
+    const m3u8Data = response.data;
+    const lines = m3u8Data.split('\n');
+    
+    // Rewrite .ts segment URLs
+    const modifiedLines = lines.map(line => {
+      if (line.trim() && !line.startsWith('#')) {
+        // Absolute or relative path to the .ts file
+        const segmentUrl = line.startsWith('http') ? line : `${baseUrl}${line}`;
+        // Route the .ts file through our proxy
+        return `/proxy/segment?url=${encodeURIComponent(segmentUrl)}&referer=${encodeURIComponent(customReferer)}&origin=${encodeURIComponent(customOrigin)}`;
+      }
+      return line;
+    });
+      res.type('application/vnd.apple.mpegurl');
+    res.send(modifiedLines.join('\n'));
   } catch (error) {
-    console.error(`Proxy Error fetching URL: ${url}`, error.message);
-    res.status(error.response?.status || 500).send(error.message);
+    res.status(500).send('Error fetching stream');
   }
 });
-
-app.listen(PORT, () => console.log(`Proxy server running on port ${PORT}`));
+// Segment Proxy to attach headers
+app.get('/proxy/segment', async (req, res) => {
+  const targetUrl = req.query.url;
+  const customReferer = req.query.referer;
+  const customOrigin = req.query.origin;
+    try {
+    const response = await axios.get(targetUrl, {
+      responseType: 'arraybuffer',
+      headers: {
+        'Referer': customReferer,
+        'Origin': customOrigin,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+      }
+    });
+    res.type('video/mp2t');
+    res.send(response.data);
+  } catch (error) {
+    res.status(500).send('Error fetching segment');
+  }
+});
+app.listen(PORT, () => console.log(`Proxy running on http://localhost:${PORT}`));
