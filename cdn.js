@@ -20,7 +20,7 @@ function resolveUrl(baseUrl, relativeUrl) {
 }
 
 // Proxy endpoint
-app.get('/proxy', async (req, res) => {
+app.get('/api/proxy', async (req, res) => {
     const { url, headers: encodedHeaders } = req.query;
 
     if (!url) {
