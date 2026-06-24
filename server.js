@@ -3,14 +3,12 @@ const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Enable wide CORS policies
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
   next();
 });
 
-// Helper function to resolve relative HLS URLs
 function resolveUrl(baseUrl, relativeUrl) {
   if (relativeUrl.startsWith('http://') || relativeUrl.startsWith('https://')) {
     return relativeUrl;
@@ -19,7 +17,6 @@ function resolveUrl(baseUrl, relativeUrl) {
   return urlObj.href;
 }
 
-// Proxy endpoint
 app.get('/proxy', async (req, res) => {
   const { url, referer } = req.query;
 
@@ -32,9 +29,9 @@ app.get('/proxy', async (req, res) => {
       method: 'get',
       url: url,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
         'Referer': referer || '',
-        'Origin': referer ? new URL(referer).origin : '',
+        'Origin': referer ? new URL(referer).origin : ''
       },
       responseType: url.includes('.m3u8') ? 'text' : 'stream'
     };
