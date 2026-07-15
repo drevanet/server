@@ -1,32 +1,25 @@
 const express = require('express');
 const axios = require('axios');
-const http = require('http');
-const https = require('https');
-const NodeCache = require('node-cache');
-
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// 1. Keep-Alive Agents to reuse TCP connections
-const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 100 });
-const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 100 });
-
-// 2. Cache manifest files (.m3u8) for 5 seconds to reduce origin hits
-const manifestCache = new NodeCache({ stdTTL: 5, checkperiod: 10 });
-
+// Enable wide CORS policies so your React client can access the proxy
 app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
     next();
 });
 
+// Helper function to resolve relative HLS URLs against a base URL
 function resolveUrl(baseUrl, relativeUrl) {
     if (relativeUrl.startsWith('http://') || relativeUrl.startsWith('https://')) {
         return relativeUrl;
     }
-    return new URL(relativeUrl, baseUrl).href;
+    const urlObj = new URL(relativeUrl, baseUrl);
+    return urlObj.href;
 }
 
+// Proxy endpoint
 app.get('/proxy', async (req, res) => {
     const { url, referer } = req.query;
 
@@ -34,19 +27,8 @@ app.get('/proxy', async (req, res) => {
         return res.status(400).send('Missing url parameter');
     }
 
-    const isM3U8 = url.includes('.m3u8');
-    const proxyHost = `${req.protocol}://${req.get('host')}/proxy`;
-
-    // 3. Serve .m3u8 from cache if available
-    if (isM3U8) {
-        const cachedManifest = manifestCache.get(url);
-        if (cachedManifest) {
-            res.setHeader('Content-Type', 'application/x-mpegURL');
-            return res.send(cachedManifest);
-        }
-    }
-
     try {
+        // Use an Android User-Agent and apply the requested Referer
         const config = {
             method: 'get',
             url: url,
@@ -55,61 +37,43 @@ app.get('/proxy', async (req, res) => {
                 'Referer': referer || '',
                 'Origin': referer ? new URL(referer).origin : ''
             },
-            // Optimize networking profiles
-            httpAgent,
-            httpsAgent,
-            responseType: isM3U8 ? 'text' : 'stream',
-            timeout: isM3U8 ? 3000 : 10000 // Drop dead connections quickly
+            responseType: url.includes('.m3u8') ? 'text' : 'stream'
         };
 
         const response = await axios(config);
 
-        if (isM3U8) {
+        // Handle Manifest File Parsing and URL Rewriting
+        if (url.includes('.m3u8')) {
             const lines = response.data.split('\n');
-            const refererParam = referer ? `&referer=${encodeURIComponent(referer)}` : '';
-            
-            // 4. Pre-allocated loop optimization for fast parsing
-            const rewrittenLines = new Array(lines.length);
-            
-            for (let i = 0; i < lines.length; i++) {
-                let line = lines[i].trim();
+            const rewrittenLines = lines.map(line => {
+                line = line.trim();
 
-                if (!line) {
-                    rewrittenLines[i] = '';
-                    continue;
-                }
-
+                // Skip empty lines and comments unless they contain URI definitions
+                if (!line) return '';
                 if (line.startsWith('#')) {
-                    rewrittenLines[i] = line.replace(/URI=["']([^"']+)["']/g, (match, p1) => {
+                    return line.replace(/URI=["']([^"']+)["']/g, (match, p1) => {
                         const absoluteUri = resolveUrl(url, p1);
-                        return `URI="${proxyHost}?url=${encodeURIComponent(absoluteUri)}${refererParam}"`;
+                        const proxyUrl = `${req.protocol}://${req.get('host')}/proxy?url=${encodeURIComponent(absoluteUri)}&referer=${encodeURIComponent(referer || '')}`;
+                        return `URI="${proxyUrl}"`;
                     });
-                    continue;
                 }
 
+                // Rewrite media segments (.ts) or nested playlists (.m3u8)
                 const absoluteMediaUrl = resolveUrl(url, line);
-                rewrittenLines[i] = `${proxyHost}?url=${encodeURIComponent(absoluteMediaUrl)}${refererParam}`;
-            }
-
-            const finalManifest = rewrittenLines.join('\n');
-            
-            // Store manifest in cache
-            manifestCache.set(url, finalManifest);
+                return `${req.protocol}://${req.get('host')}/proxy?url=${encodeURIComponent(absoluteMediaUrl)}&referer=${encodeURIComponent(referer || '')}`;
+            });
 
             res.setHeader('Content-Type', 'application/x-mpegURL');
-            return res.send(finalManifest);
+            return res.send(rewrittenLines.join('\n'));
         }
 
-        // 5. Instantly pipe TS chunks with buffer configurations
+        // Handle standard video/binary chunk streaming (.ts files)
         res.setHeader('Content-Type', response.headers['content-type'] || 'video/MP2T');
-        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable'); // Tell client player to cache video chunks
         response.data.pipe(res);
 
     } catch (error) {
-        console.error(`Proxy Error: ${url}`, error.message);
-        if (!res.headersSent) {
-            res.status(error.response?.status || 500).send(error.message);
-        }
+        console.error(`Proxy Error fetching URL: ${url}`, error.message);
+        res.status(error.response?.status || 500).send(error.message);
     }
 });
 
