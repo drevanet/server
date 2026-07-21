@@ -2,16 +2,28 @@ const express = require('express');
 const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 5000;
-
-// Reuse TCP connections to vastly speed up chunk requests
 const http = require('http');
 const https = require('https');
+
+// Define your specific allowed domain here (e.g., 'https://yourdomain.com')
+const ALLOWED_DOMAIN = 'https://yourdomain.com';
+
+// Reuse TCP connections to vastly speed up chunk requests
 const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 100 });
 const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 100 });
 
-// Optimized wide CORS policies
+// Secure CORS policy: only allow the specific domain
 app.use((req, res, next) => {
-    res.header('Access-Control-Allow-Origin', '*');
+    const origin = req.headers.origin || req.headers.referer;
+    
+    // Check if the request origin/referer matches the allowed domain
+    if (origin && origin.startsWith(ALLOWED_DOMAIN)) {
+        res.header('Access-Control-Allow-Origin', ALLOWED_DOMAIN);
+    } else {
+        // Reject requests from unauthorized domains
+        return res.status(403).send('Access Denied: Unauthorized Domain');
+    }
+    
     res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
     if (req.method === 'OPTIONS') return res.sendStatus(200);
     next();
@@ -28,7 +40,6 @@ function resolveUrl(baseUrl, relativeUrl) {
 // Optimized Proxy endpoint
 app.get('/proxy', async (req, res) => {
     const { url, referer } = req.query;
-
     if (!url) {
         return res.status(400).send('Missing url parameter');
     }
@@ -87,7 +98,7 @@ app.get('/proxy', async (req, res) => {
         // Handle standard video chunks (.ts files)
         res.setHeader('Content-Type', response.headers['content-type'] || 'video/MP2T');
         // Cache media chunks significantly; they never change
-        res.setHeader('Cache-Control', 'public, max-age=86400, immutable'); 
+        res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
         
         // Pipe stream directly while handling disconnects gracefully
         response.data.pipe(res);
@@ -100,4 +111,4 @@ app.get('/proxy', async (req, res) => {
     }
 });
 
-app.listen(PORT, () => console.log(`Optimized proxy running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Optimized domain-locked proxy running on port ${PORT}`));
