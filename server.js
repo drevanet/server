@@ -6,7 +6,7 @@ const http = require('http');
 const https = require('https');
 
 // Define your specific allowed domain here (e.g., 'https://yourdomain.com')
-const ALLOWED_DOMAIN = 'https://yourdomain.com';
+const ALLOWED_DOMAIN = 'https://betisports.com';
 
 // Reuse TCP connections to vastly speed up chunk requests
 const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 100 });
