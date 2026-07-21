@@ -3,12 +3,6 @@ const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// ADD YOUR SPECIFIC DOMAINS HERE
-const ALLOWED_DOMAINS = [
-    'betisports.com',
-    'britsgoal.com'
-];
-
 // Reuse TCP connections to vastly speed up chunk requests
 const http = require('http');
 const https = require('https');
@@ -37,20 +31,6 @@ app.get('/proxy', async (req, res) => {
 
     if (!url) {
         return res.status(400).send('Missing url parameter');
-    }
-
-    // Verify requested URL matches one of the allowed domains
-    try {
-        const parsedTargetUrl = new URL(url);
-        const isAllowed = ALLOWED_DOMAINS.some(domain => 
-            parsedTargetUrl.hostname === domain || parsedTargetUrl.hostname.endsWith('.' + domain)
-        );
-
-        if (!isAllowed) {
-            return res.status(403).send('Access Denied: Domain not allowed');
-        }
-    } catch (e) {
-        return res.status(400).send('Invalid URL format');
     }
 
     const isM3U8 = url.includes('.m3u8');
