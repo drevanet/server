@@ -5,11 +5,15 @@ const https = require('https');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const ALLOWED_DOMAIN = 'https://betisports.com/'; // Replace with your target domain
 
+// ONLY ALLOW THIS DOMAIN (Change this to your target site)
+const ALLOWED_DOMAIN = 'betisports.com';
+
+// Reuse TCP connections to vastly speed up chunk requests
 const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 100 });
 const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 100 });
 
+// Optimized wide CORS policies
 app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
@@ -17,6 +21,7 @@ app.use((req, res, next) => {
     next();
 });
 
+// High-speed relative URL resolver avoiding heavy object creation
 function resolveUrl(baseUrl, relativeUrl) {
     if (relativeUrl.startsWith('http://') || relativeUrl.startsWith('https://')) {
         return relativeUrl;
@@ -24,17 +29,19 @@ function resolveUrl(baseUrl, relativeUrl) {
     return new URL(relativeUrl, baseUrl).href;
 }
 
+// Optimized Proxy endpoint
 app.get('/proxy', async (req, res) => {
     const { url, referer } = req.query;
+
     if (!url) {
         return res.status(400).send('Missing url parameter');
     }
 
+    // Security check: strictly enforce a single allowed domain
     try {
-        const targetUrlObj = new URL(url);
-        // Security check: restrict domain
-        if (targetUrlObj.hostname !== ALLOWED_DOMAIN) {
-            return res.status(403).send('Access denied: Unauthorized domain');
+        const parsedTarget = new URL(url);
+        if (parsedTarget.hostname !== ALLOWED_DOMAIN && parsedTarget.hostname !== `www.${ALLOWED_DOMAIN}`) {
+            return res.status(403).send('Access denied: Target domain is not allowed');
         }
     } catch (e) {
         return res.status(400).send('Invalid URL');
@@ -68,6 +75,7 @@ app.get('/proxy', async (req, res) => {
             for (let i = 0; i < lines.length; i++) {
                 let line = lines[i].trim();
                 if (!line) continue;
+
                 if (line[0] === '#') {
                     if (line.includes('URI=')) {
                         line = line.replace(/URI=["']([^"']+)["']/g, (_, p1) => {
@@ -90,6 +98,7 @@ app.get('/proxy', async (req, res) => {
         res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
         response.data.pipe(res);
         req.on('close', () => response.data.destroy());
+
     } catch (error) {
         if (!res.headersSent) {
             res.status(error.response?.status || 500).send(error.message);
@@ -97,4 +106,4 @@ app.get('/proxy', async (req, res) => {
     }
 });
 
-app.listen(PORT, () => console.log(`Optimized locked proxy running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Optimized single-domain proxy running on port ${PORT}`));
