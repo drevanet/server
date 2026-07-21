@@ -5,7 +5,7 @@ const PORT = process.env.PORT || 5000;
 
 // ADD YOUR SPECIFIC DOMAINS HERE
 const ALLOWED_DOMAINS = [
-    'betisports.com,
+    'betisports.com',
     'britsgoal.com'
 ];
 
