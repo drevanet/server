@@ -7,7 +7,7 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 // ONLY ALLOW THIS DOMAIN (Change this to your target site)
-const ALLOWED_DOMAIN = 'betisports.com';
+const ALLOWED_DOMAIN = 'https://epl.betisports.com';
 
 // Reuse TCP connections to vastly speed up chunk requests
 const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 100 });
