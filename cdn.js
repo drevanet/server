@@ -1,91 +1,98 @@
 const express = require('express');
-const axios = require('axios');
-const app = express();
-const PORT = process.env.PORT || 4000;
+const http = require('http');
+const https = require('https');
+const readline = require('readline');
+const { URL } = require('url');
 
-// Enable wide CORS policies so your React client can access the proxy
+const app = express();
+const PORT = process.env.PORT || 5000;
+
+const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 200 });
+const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 200 });
+
 app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+    if (req.method === 'OPTIONS') return res.sendStatus(200);
     next();
 });
 
-// Helper function to resolve relative HLS URLs against a base URL
 function resolveUrl(baseUrl, relativeUrl) {
     if (relativeUrl.startsWith('http://') || relativeUrl.startsWith('https://')) {
         return relativeUrl;
     }
-    const urlObj = new URL(relativeUrl, baseUrl);
-    return urlObj.href;
+    return new URL(relativeUrl, baseUrl).href;
 }
 
-// Proxy endpoint
-app.get('/proxy', async (req, res) => {
-    const { url, headers: encodedHeaders } = req.query;
+app.get('/proxy', (req, res) => {
+    const { url, referer } = req.query;
+    if (!url) return res.status(400).send('Missing url parameter');
 
-    if (!url) {
-        return res.status(400).send('Missing url parameter');
-    }
+    const parsedUrl = new URL(url);
+    const isM3U8 = url.includes('.m3u8');
+    const proxyHost = `${req.protocol}://${req.get('host')}/proxy`;
+    const encodedReferer = referer ? encodeURIComponent(referer) : '';
 
-    try {
-        // Decode custom headers if passed from front-end, otherwise set defaults
-        let customHeaders = {};
-        if (encodedHeaders) {
-            try {
-                customHeaders = JSON.parse(Buffer.from(encodedHeaders, 'base64').toString('ascii'));
-            } catch (e) {
-                console.error("Failed to parse custom headers", e);
-            }
-        }
+    const options = {
+        hostname: parsedUrl.hostname,
+        port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
+        path: parsedUrl.pathname + parsedUrl.search,
+        method: 'GET',
+        headers: {
+            'User-Agent': 'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36',
+            'Referer': referer || '',
+            'Origin': referer ? new URL(referer).origin : ''
+        },
+        agent: parsedUrl.protocol === 'https:' ? httpsAgent : httpAgent,
+        timeout: 5000
+    };
 
-        // Configuration matching standard "forbidden video" requirements
-        const config = {
-            method: 'get',
-            url: url,
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Referer': customHeaders.Referer || '',
-                'Origin': customHeaders.Origin || '',
-                ...customHeaders
-            },
-            responseType: url.includes('.m3u8') ? 'text' : 'stream'
-        };
+    const lib = parsedUrl.protocol === 'https:' ? https : http;
 
-        const response = await axios(config);
+    const proxyReq = lib.request(options, (proxyRes) => {
+        if (isM3U8) {
+            res.setHeader('Content-Type', 'application/x-mpegURL');
+            res.setHeader('Cache-Control', 'public, max-age=2');
 
-        // Handle Manifest File Parsing and URL Rewriting
-        if (url.includes('.m3u8')) {
-            const lines = response.data.split('\n');
-            const rewrittenLines = lines.map(line => {
-                line = line.trim();
-                // Skip empty lines and comment lines unless they contain URI definitions (like encryption keys)
-                if (!line) return '';
-                if (line.startsWith('#')) {
-                    // Match URI tags inside attributes like #EXT-X-KEY:METHOD=AES-128,URI="keys.key"
-                    return line.replace(/URI=["']([^"']+)["']/g, (match, p1) => {
-                        const absoluteUri = resolveUrl(url, p1);
-                        const proxyUrl = `${req.protocol}://${req.get('host')}/proxy?url=${encodeURIComponent(absoluteUri)}&headers=${encodedHeaders || ''}`;
-                        return `URI="${proxyUrl}"`;
-                    });
-                }
-                
-                // Rewrite media segments (.ts, .mp4, etc.) or nested variant playlists (.m3u8)
-                const absoluteMediaUrl = resolveUrl(url, line);
-                return `${req.protocol}://${req.get('host')}/proxy?url=${encodeURIComponent(absoluteMediaUrl)}&headers=${encodedHeaders || ''}`;
+            const rl = readline.createInterface({
+                input: proxyRes,
+                crlfDelay: Infinity
             });
 
-            res.setHeader('Content-Type', 'application/x-mpegURL');
-            return res.send(rewrittenLines.join('\n'));
+            rl.on('line', (line) => {
+                const trimmed = line.trim();
+                if (!trimmed) return;
+
+                if (trimmed[0] === '#') {
+                    if (trimmed.includes('URI=')) {
+                        const updated = trimmed.replace(/URI=["']([^"']+)["']/g, (_, p1) => {
+                            const abs = resolveUrl(url, p1);
+                            return `URI="${proxyHost}?url=${encodeURIComponent(abs)}&referer=${encodedReferer}"`;
+                        });
+                        res.write(updated + '\n');
+                    } else {
+                        res.write(trimmed + '\n');
+                    }
+                } else {
+                    const abs = resolveUrl(url, trimmed);
+                    res.write(`${proxyHost}?url=${encodeURIComponent(abs)}&referer=${encodedReferer}\n`);
+                }
+            });
+
+            rl.on('close', () => res.end());
+        } else {
+            res.setHeader('Content-Type', proxyRes.headers['content-type'] || 'video/MP2T');
+            res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
+            proxyRes.pipe(res);
         }
+    });
 
-        // Handle standard video/binary chunk streaming (.ts files)
-        res.setHeader('Content-Type', response.headers['content-type'] || 'video/MP2T');
-        response.data.pipe(res);
+    proxyReq.on('error', (err) => {
+        if (!res.headersSent) res.status(500).send(err.message);
+    });
 
-    } catch (error) {
-        console.error(`Proxy Error fetching URL: ${url}`, error.message);
-        res.status(error.response?.status || 500).send(error.message);
-    }
+    req.on('close', () => proxyReq.destroy());
+    proxyReq.end();
 });
 
-app.listen(PORT, () => console.log(`Proxy server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Fast proxy running on port ${PORT}`));
