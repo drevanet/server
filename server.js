@@ -1,15 +1,13 @@
 const express = require('express');
-const axios = require('axios');
+const http = require('http');
+const https = require('https');
+const { URL } = require('url');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Reuse TCP connections to vastly speed up chunk requests
-const http = require('http');
-const https = require('https');
-const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 100 });
-const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 100 });
+const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 200 });
+const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 200 });
 
-// Optimized wide CORS policies
 app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
@@ -17,7 +15,6 @@ app.use((req, res, next) => {
     next();
 });
 
-// High-speed relative URL resolver avoiding heavy object creation
 function resolveUrl(baseUrl, relativeUrl) {
     if (relativeUrl.startsWith('http://') || relativeUrl.startsWith('https://')) {
         return relativeUrl;
@@ -25,79 +22,82 @@ function resolveUrl(baseUrl, relativeUrl) {
     return new URL(relativeUrl, baseUrl).href;
 }
 
-// Optimized Proxy endpoint
-app.get('/proxy', async (req, res) => {
+app.get('/proxy', (req, res) => {
     const { url, referer } = req.query;
+    if (!url) return res.status(400).send('Missing url parameter');
 
-    if (!url) {
-        return res.status(400).send('Missing url parameter');
-    }
-
-    const isM3U8 = url.includes('.m3u8');
+    const targetUrl = new URL(url);
+    const isM3U8 = targetUrl.pathname.includes('.m3u8') || url.includes('.m3u8');
     const proxyHost = `${req.protocol}://${req.get('host')}/proxy`;
     const encodedReferer = referer ? encodeURIComponent(referer) : '';
 
-    try {
-        const config = {
-            method: 'get',
-            url: url,
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36',
-                'Referer': referer || '',
-                'Origin': referer ? new URL(referer).origin : '',
-                'Accept-Encoding': 'gzip, deflate, br' // Speeds up manifest delivery size
-            },
-            // Fast text buffer for manifests, raw stream for binary data chunks
-            responseType: isM3U8 ? 'text' : 'stream',
-            httpAgent,
-            httpsAgent,
-            timeout: 5000 // Prevents broken segments from hanging the event loop
-        };
+    const options = {
+        hostname: targetUrl.hostname,
+        port: targetUrl.port || (targetUrl.protocol === 'https:' ? 443 : 80),
+        path: targetUrl.pathname + targetUrl.search,
+        method: 'GET',
+        headers: {
+            'User-Agent': 'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36',
+            'Referer': referer || '',
+            'Origin': referer ? new URL(referer).origin : '',
+            'Accept-Encoding': 'gzip, deflate'
+        },
+        agent: targetUrl.protocol === 'https:' ? httpsAgent : httpAgent
+    };
 
-        const response = await axios(config);
+    const lib = targetUrl.protocol === 'https:' ? https : http;
 
-        // Handle Manifest File Parsing and URL Rewriting (.m3u8)
+    const proxyReq = lib.request(options, (proxyRes) => {
+        if (proxyRes.statusCode >= 400) {
+            res.status(proxyRes.statusCode).send(`Upstream error: ${proxyRes.statusCode}`);
+            proxyRes.resume();
+            return;
+        }
+
         if (isM3U8) {
-            const lines = response.data.split('\n');
-            let rewrittenResult = '';
-
-            for (let i = 0; i < lines.length; i++) {
-                let line = lines[i].trim();
-                if (!line) continue;
-
-                if (line[0] === '#') {
-                    if (line.includes('URI=')) {
-                        line = line.replace(/URI=["']([^"']+)["']/g, (_, p1) => {
-                            const abs = resolveUrl(url, p1);
-                            return `URI="${proxyHost}?url=${encodeURIComponent(abs)}&referer=${encodedReferer}"`;
-                        });
-                    }
-                    rewrittenResult += line + '\n';
-                } else {
-                    const abs = resolveUrl(url, line);
-                    rewrittenResult += `${proxyHost}?url=${encodeURIComponent(abs)}&referer=${encodedReferer}\n`;
-                }
-            }
-
             res.setHeader('Content-Type', 'application/x-mpegURL');
-            res.setHeader('Cache-Control', 'public, max-age=2'); // Cache sub-manifests briefly
-            return res.send(rewrittenResult);
-        }
+            res.setHeader('Cache-Control', 'public, max-age=2');
 
-        // Handle standard video chunks (.ts files)
-        res.setHeader('Content-Type', response.headers['content-type'] || 'video/MP2T');
-        // Cache media chunks significantly; they never change
-        res.setHeader('Cache-Control', 'public, max-age=86400, immutable'); 
-        
-        // Pipe stream directly while handling disconnects gracefully
-        response.data.pipe(res);
-        req.on('close', () => response.data.destroy());
-
-    } catch (error) {
-        if (!res.headersSent) {
-            res.status(error.response?.status || 500).send(error.message);
+            let body = '';
+            proxyRes.setEncoding('utf8');
+            proxyRes.on('data', (chunk) => { body += chunk; });
+            proxyRes.on('end', () => {
+                const lines = body.split('\n');
+                let output = '';
+                for (let line of lines) {
+                    line = line.trim();
+                    if (!line) continue;
+                    if (line.startsWith('#')) {
+                        if (line.includes('URI=')) {
+                            line = line.replace(/URI=["']([^"']+)["']/g, (_, p1) => {
+                                const abs = resolveUrl(url, p1);
+                                return `URI="${proxyHost}?url=${encodeURIComponent(abs)}&referer=${encodedReferer}"`;
+                            });
+                        }
+                        output += line + '\n';
+                    } else {
+                        const abs = resolveUrl(url, line);
+                        output += `${proxyHost}?url=${encodeURIComponent(abs)}&referer=${encodedReferer}\n`;
+                    }
+                }
+                res.send(output);
+            });
+        } else {
+            res.setHeader('Content-Type', proxyRes.headers['content-type'] || 'video/MP2T');
+            res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
+            proxyRes.pipe(res);
         }
-    }
+    });
+
+    proxyReq.on('error', (err) => {
+        if (!res.headersSent) res.status(500).send(err.message);
+    });
+
+    req.on('close', () => {
+        proxyReq.destroy();
+    });
+
+    proxyReq.end();
 });
 
-app.listen(PORT, () => console.log(`Optimized proxy running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Fast proxy running on port ${PORT}`));
